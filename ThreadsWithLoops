@@ -1,0 +1,88 @@
+#include <stdlib.h>
+#include <stdio.h>
+#include <pthread.h>
+
+int mails = 0;
+pthread_mutex_t mutex;
+
+struct args {
+    int totalIterations;
+    int mutexOn;
+};
+
+void* routine(void *input) {
+    int totalIterations = ((struct args*)input)->totalIterations;
+    int mutexOn = ((struct args*)input)->mutexOn;
+
+    for (int i = 0; i < totalIterations; i++) {
+	if(mutexOn){pthread_mutex_lock(&mutex);}
+        mails++;
+        if(mutexOn){pthread_mutex_unlock(&mutex);}
+    }
+}
+
+void* readFile(void *input){
+    int mutexOn = ((struct args*)input)->mutexOn;
+    if(mutexOn){pthread_mutex_lock(&mutex);}
+
+    FILE *fptr;
+    char file1[100], a;
+	
+    // Open file
+    fptr = fopen("moo.txt", "r");
+    if (fptr == NULL)
+    {
+        printf("Cannot open file \n");
+        exit(0);
+    }
+
+    // Read contents from file
+    a = fgetc(fptr);
+    while (a != EOF)
+    {
+        printf ("%c", a);
+        a = fgetc(fptr);
+    }
+  	printf("\n");
+    fclose(fptr);
+
+    if(mutexOn){pthread_mutex_unlock(&mutex);}
+
+}
+
+int main(int argc, char* argv[]) {
+
+    const char *fileNames[] = {"one","two","three"};    
+
+    int totalThreads = atoi(argv[1]);
+    int totalIterations = atoi(argv[2]);
+    int mutexOn = atoi(argv[3]);
+    
+    struct args *pthreadArgs = (struct args *)malloc(sizeof(struct args));
+    pthreadArgs->totalIterations = totalIterations;
+    pthreadArgs->mutexOn = mutexOn;
+
+    printf("total number of threads: %d \n", totalThreads);
+    printf("total number of iterations: %d \n", totalIterations);
+    printf("mutexOn: %d \n", mutexOn);
+
+    pthread_t th[totalThreads];
+    int i;
+    pthread_mutex_init(&mutex, NULL);
+    for (i = 0; i < totalThreads; i++) {
+        if (pthread_create(th + i, NULL, &routine, (void *)pthreadArgs) != 0) {
+            perror("Failed to create thread");
+            return 1;
+        }
+        printf("Thread %d has started\n", i);
+    }
+    for (i = 0; i < totalThreads; i++) {
+        if (pthread_join(th[i], NULL) != 0) {
+            return 2;
+        }
+        printf("Thread %d has finished execution\n", i);
+    }
+    pthread_mutex_destroy(&mutex);
+    printf("Number of mails: %d\n", mails);
+    return 0;
+}
