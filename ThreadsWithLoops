@@ -1,88 +1,129 @@
-#include <stdlib.h>
-#include <stdio.h>
+#include <semaphore.h>
 #include <pthread.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <time.h>
+#include <stdbool.h>
 
-int mails = 0;
-pthread_mutex_t mutex;
+sem_t orderSem;
+sem_t writerSem;
+sem_t readerSem;
+
+unsigned int readers = 0;
+
+int counter = 0;
 
 struct args {
     int totalIterations;
-    int mutexOn;
+    int semaOn;
+    char* fileName;
 };
 
-void* routine(void *input) {
-    int totalIterations = ((struct args*)input)->totalIterations;
-    int mutexOn = ((struct args*)input)->mutexOn;
-
-    for (int i = 0; i < totalIterations; i++) {
-	if(mutexOn){pthread_mutex_lock(&mutex);}
-        mails++;
-        if(mutexOn){pthread_mutex_unlock(&mutex);}
-    }
+void readCounter(){
+    printf("Reading Counter: %d\n", counter);
 }
 
-void* readFile(void *input){
-    int mutexOn = ((struct args*)input)->mutexOn;
-    if(mutexOn){pthread_mutex_lock(&mutex);}
+void* Read(void *input){
 
-    FILE *fptr;
-    char file1[100], a;
+    usleep(rand()/100000);
+
+    int semaOn = ((struct args*)input)->semaOn;
+    if(semaOn){sem_wait(&orderSem);}
+    if(semaOn){sem_wait(&readerSem);}
+    if (readers == 0){
+        if(semaOn){sem_wait(&writerSem);}
+    }
+    readers++;
+    if(semaOn){sem_post(&orderSem);}
+    if(semaOn){sem_post(&readerSem);}
+
+    readCounter();
+
+    if(semaOn){sem_wait(&readerSem);}
+    readers--;               
+    if (readers == 0){        
+        if(semaOn){sem_post(&writerSem);}
+    }
+    if(semaOn){sem_post(&readerSem);}
+
+}
+
+void incrementCounter(){
+    for (int i = 0; i < 100; i++) {
+        counter = counter + 1;
+    }
+    //printf("Updating Counter: %d\n", counter);
+}
+
+void* Write(void *input){
+    usleep(rand()/100000);
+    int semaOn = ((struct args*)input)->semaOn;
+    
+    if(semaOn){sem_wait(&orderSem);}
+    if(semaOn){sem_wait(&writerSem);}
+    if(semaOn){sem_post(&orderSem);}
+
+    incrementCounter();
+
+    if(semaOn){sem_post(&writerSem);}
 	
-    // Open file
-    fptr = fopen("moo.txt", "r");
-    if (fptr == NULL)
-    {
-        printf("Cannot open file \n");
-        exit(0);
-    }
-
-    // Read contents from file
-    a = fgetc(fptr);
-    while (a != EOF)
-    {
-        printf ("%c", a);
-        a = fgetc(fptr);
-    }
-  	printf("\n");
-    fclose(fptr);
-
-    if(mutexOn){pthread_mutex_unlock(&mutex);}
-
 }
 
-int main(int argc, char* argv[]) {
+bool test(int totalThreadsWriters, int repetitions){
+    
+    return counter==totalThreadsWriters*repetitions*100;
+}
 
-    const char *fileNames[] = {"one","two","three"};    
+int main(int argc, char* argv[]){
+    clock_t begin = clock();
 
-    int totalThreads = atoi(argv[1]);
-    int totalIterations = atoi(argv[2]);
-    int mutexOn = atoi(argv[3]);
+    sem_init(&writerSem, 0, 1);
+    sem_init(&readerSem, 0, 1);
+    sem_init(&orderSem, 0, 1);   
+
+    int totalThreadsReaders = atoi(argv[1]);
+    int totalThreadsWriters = atoi(argv[2]);
+    int repetitions = atoi(argv[3]);
+    int semaOn = atoi(argv[4]);
     
     struct args *pthreadArgs = (struct args *)malloc(sizeof(struct args));
-    pthreadArgs->totalIterations = totalIterations;
-    pthreadArgs->mutexOn = mutexOn;
+    pthreadArgs->semaOn = semaOn;
 
-    printf("total number of threads: %d \n", totalThreads);
-    printf("total number of iterations: %d \n", totalIterations);
-    printf("mutexOn: %d \n", mutexOn);
-
-    pthread_t th[totalThreads];
+    pthread_t th[totalThreadsReaders+totalThreadsWriters];
+    
     int i;
-    pthread_mutex_init(&mutex, NULL);
-    for (i = 0; i < totalThreads; i++) {
-        if (pthread_create(th + i, NULL, &routine, (void *)pthreadArgs) != 0) {
-            perror("Failed to create thread");
-            return 1;
+    int j;
+    for (j = 0; j < repetitions; j++) { 
+    
+        for (i = 0; i < totalThreadsReaders; i++) {
+            if (pthread_create(th + i, NULL, &Read, (void *)pthreadArgs) != 0) {
+                perror("Failed to create thread");
+                return 1;
+            }
         }
-        printf("Thread %d has started\n", i);
-    }
-    for (i = 0; i < totalThreads; i++) {
-        if (pthread_join(th[i], NULL) != 0) {
-            return 2;
+
+        for (i = 0; i < totalThreadsWriters; i++) {
+            if (pthread_create(th + i + totalThreadsReaders, NULL, &Write, (void *)pthreadArgs) != 0) {
+                perror("Failed to create thread");
+                return 1;
+            }
         }
-        printf("Thread %d has finished execution\n", i);
+
+        for (i = 0; i < totalThreadsReaders+totalThreadsWriters; i++) {
+            if (pthread_join(th[i], NULL) != 0) {
+                return 2;
+            }
+        }
     }
-    pthread_mutex_destroy(&mutex);
-    printf("Number of mails: %d\n", mails);
+    sem_destroy(&writerSem);
+    sem_destroy(&readerSem);
+    sem_destroy(&orderSem);
+    
+    clock_t end = clock();
+    double time_spent = (double)(end - begin) / CLOCKS_PER_SEC;
+    printf("Counter result: %d \n", counter);
+    printf("Time spent: %f\n", time_spent);
+    printf("result: %d\n", test(totalThreadsWriters, repetitions));
     return 0;
 }
