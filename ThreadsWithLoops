@@ -6,124 +6,146 @@
 #include <time.h>
 #include <stdbool.h>
 
-sem_t orderSem;
-sem_t writerSem;
-sem_t readerSem;
+// Define global variables // 
+sem_t orderSem; // Manages the queue order of the different threads for both reader/writer
+sem_t writerSem; // Semaphore for managing if the next writer in queue can safely write
+sem_t readerSem; // Semaphore for managing if the next readers in queue can safely read
 
-unsigned int readers = 0;
+int readers = 0; // The current amount of readers
 
-int counter = 0;
+int counter = 0; // The shared variable readers will print to StdOut and writers will increment
 
-struct args {
-    int totalIterations;
-    int semaOn;
-    char* fileName;
+struct args { // struct used as an argument format for pthread_create().
+    int semaOn; // int between 0 and 1 to determine if the semaphore implementation is on/off. Useful for testing
+    int sleepOn; // int between 0 and 1 to determine if read/increment should sleep shortly to simulate the threads doing hard work. Useful for testing
 };
 
-void readCounter(){
-    printf("Reading Counter: %d\n", counter);
+// ReadCounter() does the actual 'reading', which in this case for simplicity's sake merely prints out the current value of the Counter variable.
+// ReadCounter() is called by the parent function Read() when no writer is currently active
+void readCounter(int sleepOn){
+    if(sleepOn){usleep(rand()/1000000);} // if sleepOn is 1, thread sleeps a little to simulate harder work
+    printf("Reading Counter: %d\n", counter); // reads by printing counter
 }
 
-void* Read(void *input){
+// Implementation of a reader with semaphores. A reader must queue itself as fast as possible and wait for its turn, determined by 'orderSem'.
+// Once 'orderSem' is released, 'readerSem' is simultaneously released, and the reader is free to start reading.
+// If there is no other reader currently reading, it locks the writers out by locking 'writerSem'. If other readers are active, another reader has 
+// locked out the writers already
+// Once a reader is finished reading, it checks if other readers are active. If none are, it releases the 'writerSem', and always exits releasing 'readerSem'
+// allowing for another reader to start its turn of reading
+// Note that there is a possible race condition being handled here with the readers variable. Since it's being incr/decr by many readers at the same time,
+// readerSem was necessary to implement to avoid a race condition
+void* Read(void *input){ 
 
-    usleep(rand()/100000);
+    usleep(rand()/100000); // sleeps for a short, random amount of time to allow Read and Write to mix in order before they get to orderSem
 
-    int semaOn = ((struct args*)input)->semaOn;
-    if(semaOn){sem_wait(&orderSem);}
-    if(semaOn){sem_wait(&readerSem);}
-    if (readers == 0){
-        if(semaOn){sem_wait(&writerSem);}
+    int semaOn = ((struct args*)input)->semaOn; // semaOn determines if their implementation is active or not for testing. 0=off, 1=on
+    int sleepOn = ((struct args*)input)->sleepOn; //0=off, 1=on. Used in readCounter() to simulate the function doing more work for testing.
+    if(semaOn){sem_wait(&orderSem);} // Locks the orderSem to create a queue structure between Read() and Write()
+    if(semaOn){sem_wait(&readerSem);}// Locks readerSem for a short time to check on the shared variable 'read' 
+    if (readers == 0){// If read is 0, no other reader is currently active
+        if(semaOn){sem_wait(&writerSem);} // if 0, this thread needs to lock out writers before it starts reading or allow other readers to read
     }
-    readers++;
-    if(semaOn){sem_post(&orderSem);}
-    if(semaOn){sem_post(&readerSem);}
+    readers++; // at least 1 reader is currently reading
+    if(semaOn){sem_post(&orderSem);} // Unlocks the orderSem 
+    if(semaOn){sem_post(&readerSem);} // Unlocks the readerSem
 
-    readCounter();
-
-    if(semaOn){sem_wait(&readerSem);}
-    readers--;               
-    if (readers == 0){        
-        if(semaOn){sem_post(&writerSem);}
+    readCounter(sleepOn); // Function for the actual reading. Note that since orderSem and readerSem is unlocked, but'writerSem' is still locked, other  			   	  // readers can begin reading as well, but ONLY if they are next in line.
+    if(semaOn){sem_wait(&readerSem);} // Reading is done. Before the thread exits, it has to lock out other readers shortly to decrement the shared variable 					      // read
+    readers--; // Decrement readers, useful for keeping track if any other readers are currently active. 
+    if (readers == 0){ // If this thread is the last current reader, the writers needs access to write again
+        if(semaOn){sem_post(&writerSem);}  // unlocks writerSem
     }
-    if(semaOn){sem_post(&readerSem);}
+    if(semaOn){sem_post(&readerSem);} // Thread is done with the shared variable readers, and unlocks readerSem for other readers, if active
 
 }
 
-void incrementCounter(){
-    for (int i = 0; i < 100; i++) {
-        counter = counter + 1;
+// incrementCounter does the actual writing. In this case for simplicity, writing means incrementing the shared variable counter
+// incrementCounter() is called by the parent function Write() when no writer or reader is currently active
+void incrementCounter(int sleepOn){
+    if(sleepOn){usleep(rand()/1000000);} 
+    int i;
+    for (i = 0; i < 1000; i++) {
+        counter++;
     }
     //printf("Updating Counter: %d\n", counter);
 }
 
+// Implementation of a writer with semaphores, tasked with 'writing' the shared variable 'Counter' to a higher integer. A writer, unlike a reader, is capable of creating a race condition by increment the shared variable, and as such can't allow other writers to write simultaneously with any other thread.
 void* Write(void *input){
-    usleep(rand()/100000);
-    int semaOn = ((struct args*)input)->semaOn;
+    usleep(rand()/100000); // sleeps for a short, random amount of time to allow Read and Write to mix in order
+    int semaOn = ((struct args*)input)->semaOn; // semaOn determines if their implementation is active or not, for testing. 0=off, 1=on
+    int sleepOn = ((struct args*)input)->sleepOn; //0=off, 1=on. Used in incrementCounter() to simulate the function doing more work.
     
-    if(semaOn){sem_wait(&orderSem);}
-    if(semaOn){sem_wait(&writerSem);}
-    if(semaOn){sem_post(&orderSem);}
+    if(semaOn){sem_wait(&orderSem);} // Locks the orderSem to create a queue structure between Read() and Write()
+    if(semaOn){sem_wait(&writerSem);} // Locks out other writers to avoid a critical section
+    if(semaOn){sem_post(&orderSem);} // Release orderSem, and the next reader/writer can come further into the queue
 
-    incrementCounter();
+    incrementCounter(sleepOn); // Writing is done. Do note that while orderSem has been released and reading could theoretically continue, actual reading can only
+			// happen if it has access to writerSem, which it cant, which makes it safe to start writing
 
-    if(semaOn){sem_post(&writerSem);}
+    if(semaOn){sem_post(&writerSem);} // Writing is done and writerSem is released for other readers/writers to continue
 	
 }
 
+// A simple test to see if 'counter' is of the expected value, determined by input. If the counter is of any other value, a race condition has occurred,
+// which should only be possible if semaphore implementation is off.
 bool test(int totalThreadsWriters, int repetitions){
     
-    return counter==totalThreadsWriters*repetitions*100;
+    return counter==totalThreadsWriters*repetitions*1000;
 }
 
+//Main function to initialize necessary variables, manage the threads and run tests afterwards. 
 int main(int argc, char* argv[]){
-    clock_t begin = clock();
-
+    // initialize semaphores to only allow a single holder at a time
     sem_init(&writerSem, 0, 1);
     sem_init(&readerSem, 0, 1);
-    sem_init(&orderSem, 0, 1);   
+    sem_init(&orderSem, 0, 1);
 
-    int totalThreadsReaders = atoi(argv[1]);
-    int totalThreadsWriters = atoi(argv[2]);
-    int repetitions = atoi(argv[3]);
-    int semaOn = atoi(argv[4]);
+    int totalThreadsReaders = atoi(argv[1]); // Read from input 1 (int) how many threads needs to read
+    int totalThreadsWriters = atoi(argv[2]); // Read from input 2 (int) how many threads needs to write
+    int repetitions = atoi(argv[3]); // Read from input 3 (int) how many times the threads needs to repeat their process
+    int semaOn = atoi(argv[4]); // Read from input 4 if semaphore implementation should be on/off (0/1)
+    int sleepOn = atoi(argv[5]); // Read from input 4 if semaphore implementation should be on/off (0/1)
+ 
     
-    struct args *pthreadArgs = (struct args *)malloc(sizeof(struct args));
-    pthreadArgs->semaOn = semaOn;
+    struct args *pthreadArgs = (struct args *)malloc(sizeof(struct args)); // Create argument struct for pthread_create()
+    pthreadArgs->semaOn = semaOn; // add semaOn to argument struct
+    pthreadArgs->sleepOn = sleepOn;
 
-    pthread_t th[totalThreadsReaders+totalThreadsWriters];
+    pthread_t th[totalThreadsReaders+totalThreadsWriters]; // create a list of threads depended on the amount of readers+writers
     
-    int i;
-    int j;
-    for (j = 0; j < repetitions; j++) { 
-    
-        for (i = 0; i < totalThreadsReaders; i++) {
+    int j; // int j for repetitions in the outer loop
+    int i; // int i for thread creation in the inner loop
+    for (j = 0; j < repetitions; j++) { // loop to repeat the threads doing reading and writing. 
+        for (i = 0; i < totalThreadsReaders; i++) { // Loop for creating readers and tasking them with reading
             if (pthread_create(th + i, NULL, &Read, (void *)pthreadArgs) != 0) {
                 perror("Failed to create thread");
                 return 1;
             }
         }
 
-        for (i = 0; i < totalThreadsWriters; i++) {
+        for (i = 0; i < totalThreadsWriters; i++) { // Loop for creating writers and tasking them with reading
             if (pthread_create(th + i + totalThreadsReaders, NULL, &Write, (void *)pthreadArgs) != 0) {
                 perror("Failed to create thread");
                 return 1;
             }
         }
 
-        for (i = 0; i < totalThreadsReaders+totalThreadsWriters; i++) {
+        for (i = 0; i < totalThreadsReaders+totalThreadsWriters; i++) { // Loop for joining readers and writers
             if (pthread_join(th[i], NULL) != 0) {
                 return 2;
             }
         }
     }
-    sem_destroy(&writerSem);
+    
+    sem_destroy(&writerSem); // Semaphores are no longer used therefore terminated
     sem_destroy(&readerSem);
     sem_destroy(&orderSem);
-    
-    clock_t end = clock();
-    double time_spent = (double)(end - begin) / CLOCKS_PER_SEC;
-    printf("Counter result: %d \n", counter);
-    printf("Time spent: %f\n", time_spent);
-    printf("result: %d\n", test(totalThreadsWriters, repetitions));
-    return 0;
+     
+    printf("Counter result: %d \n", counter); // Output the total amount of counter
+    printf("result: %d\n", test(totalThreadsWriters, repetitions)); // check to see if counter is exactly as expected. With a large enough amount of threads
+								    // and repetitions used, it can be expected that a race condition would have occurred if
+								    // semaphore implementation wasn't correct
+    return 0; // End the program
 }
